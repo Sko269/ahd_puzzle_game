@@ -1,13 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Delaunator from 'delaunator';
-import { Stage, Layer, Image as KonvaImage, Group } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Group, Line, Text as KonvaText } from 'react-konva';
 
 import './App.css';
 import AHDLogo from './AHD_logo.png';
-import defaultChairImage from './IAPS_chair_neutral.png';
 
-const AILAB_API_KEY = "63go8Wtaq6Hp9VmkYQiNZEU5gcI0fnb3uX1bKshcJqkWvzVAPFFsm8nwNRdvDJQ4";
-const USE_AILAB_API = true;
+// Get API key for changing the facial expression on the image
+const AILAB_API_KEY = process.env.REACT_APP_AILAB_API_KEY;
+const USE_AILAB_API = false;
 
 function App() {
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -29,31 +29,20 @@ function App() {
   const difficultyPoints = { Easy: 2, Medium: 4, Hard: 8 };
   const [puzzleShape, setPuzzleShape] = useState('broken-glass'); // broken-glass, classic-jigsaw
   const [puzzlePieces, setPuzzlePieces] = useState([]);
+  const [puzzleBoard, setPuzzleBoard] = useState([]);
+  const [draggedPiece, setDraggedPiece] = useState(null);
   const [puzzleSize, setPuzzleSize] = useState(3); // 3x3, 4x4, 5x5
   const [boardDimensions, setBoardDimensions] = useState({ width: 0, height: 0 });
-  const [rotationEnabled, setRotationEnabled] = useState(false); // Rotation toggle state
-  const [usingDefaultImage, setUsingDefaultImage] = useState(true); // Track if using default image
-  const [memoryExtracted, setMemoryExtracted] = useState(false);
 
-  // Load default IAPS chair image
-  const loadDefaultImage = () => {
-    setUsingDefaultImage(true);
-    setPreviewUrl(defaultChairImage);
-    setImgDimensions({ width: 512, height: 512 });
-    setTriangles([]);
-    setKonvaImg(null);
-    setPiecePositions([]);
-    setNeighbors([]);
-    setGroupIds([]);
-    setSadImageUrl(null);
-    setShowMemoryModal(false);
-    setMemoryExtracted(true); 
-    
-    // Clear puzzle pieces for classic jigsaw
-    setPuzzlePieces([]);
-    setBoardDimensions({ width: 0, height: 0 });
-    setCompleted(false);
-  };
+  // Helper: Convert dataURL to Blob
+  function dataURLtoBlob(dataurl) {
+    var arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1],
+      bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], { type: mime });
+  }
 
   // Handle image upload
   const handleImageChange = async (e) => {
@@ -62,13 +51,18 @@ function App() {
       setIsProcessingEmotion(true);
       setSadImageUrl(null);
       setShowMemoryModal(false);
-      setMemoryExtracted(false);
       // Read file as dataURL for preview
       const reader = new FileReader();
       reader.onloadend = async () => {
         setPreviewUrl(reader.result);
-        setUsingDefaultImage(false);
         if (USE_AILAB_API) {
+          // Check if API key is available
+          if (!AILAB_API_KEY) {
+            alert('API key not found. Please set REACT_APP_AILAB_API_KEY in your environment variables.');
+            setIsProcessingEmotion(false);
+            return;
+          }
+          
           // Send to AILabTools API for sad emotion
           try {
             const formData = new FormData();
@@ -86,7 +80,6 @@ function App() {
             if (result && result.data && result.data.image) {
               setSadImageUrl('data:image/png;base64,' + result.data.image);
               setShowMemoryModal(true);
-              setMemoryExtracted(true);
             } else {
               alert('Failed to process image for emotion.');
             }
@@ -96,9 +89,9 @@ function App() {
             setIsProcessingEmotion(false);
           }
         } else {
+          // Development mode: just use the original image for the modal
           setSadImageUrl(reader.result);
           setShowMemoryModal(true);
-          setMemoryExtracted(true);
           setIsProcessingEmotion(false);
         }
       };
@@ -111,9 +104,6 @@ function App() {
       setPiecePositions([]);
       setNeighbors([]);
       setGroupIds([]);
-      setPuzzlePieces([]);
-      setBoardDimensions({ width: 0, height: 0 });
-      setCompleted(false);
     }
   };
 
@@ -121,25 +111,25 @@ function App() {
 
   // Generate triangles for broken glass effect
   const generateTriangles = (imgWidth, imgHeight, numPoints, margin) => {
-      const points = [];
-      for (let i = 0; i < numPoints; i++) {
+    const points = [];
+    for (let i = 0; i < numPoints; i++) {
       const x = Math.random() * (imgWidth - 2 * margin) + margin;
       const y = Math.random() * (imgHeight - 2 * margin) + margin;
-        points.push([x, y]);
-      }
-      // Add corners
+      points.push([x, y]);
+    }
+    // Add corners
     points.push([0, 0], [imgWidth, 0], [imgWidth, imgHeight], [0, imgHeight]);
-      // Triangulate
-      const delaunay = Delaunator.from(points);
-      const { triangles: triIndices } = delaunay;
-      const tris = [];
-      for (let i = 0; i < triIndices.length; i += 3) {
-        tris.push([
-          points[triIndices[i]],
-          points[triIndices[i + 1]],
-          points[triIndices[i + 2]],
-        ]);
-      }
+    // Triangulate
+    const delaunay = Delaunator.from(points);
+    const { triangles: triIndices } = delaunay;
+    const tris = [];
+    for (let i = 0; i < triIndices.length; i += 3) {
+      tris.push([
+        points[triIndices[i]],
+        points[triIndices[i + 1]],
+        points[triIndices[i + 2]],
+      ]);
+    }
     return tris;
   };
 
@@ -150,10 +140,11 @@ function App() {
       img.onload = () => {
         const pieces = [];
         
+        // Use the original image dimensions without cropping
         const imgWidth = img.width;
         const imgHeight = img.height;
         
-        // Scale the image to fit within the play area 
+        // Scale the image to fit within the play area while maintaining aspect ratio
         const maxBoardWidth = 500;
         const maxBoardHeight = 500;
         
@@ -171,7 +162,7 @@ function App() {
         const pieceWidth = boardWidth / size;
         const pieceHeight = boardHeight / size;
         
-        // Set play area dimensions
+        // Calculate play area dimensions
         const playAreaWidth = PLAY_AREA_WIDTH;
         const playAreaHeight = PLAY_AREA_HEIGHT;
         
@@ -181,7 +172,7 @@ function App() {
             const correctX = col * pieceWidth;
             const correctY = row * pieceHeight;
             
-            // Random position within play area bounds
+            // Random position within play area bounds (avoiding the center board area)
             const boardCenterX = PLAY_AREA_WIDTH / 2;
             const boardCenterY = PLAY_AREA_HEIGHT / 2;
             const boardX = boardCenterX - boardWidth / 2;
@@ -198,9 +189,8 @@ function App() {
               randomY <= boardY + boardHeight + 50
             );
             
-            // Add rotation based on rotationEnabled state - default to 0 degrees when rotation is off
-            const randomRotation = rotationEnabled ? Math.floor(Math.random() * 4) * 90 : 0;
-            console.log(`Initial piece ${id}: rotation set to ${randomRotation} degrees (rotation ${rotationEnabled ? 'ON' : 'OFF'})`);
+            // Add random rotation (0, 90, 180, or 270 degrees)
+            const randomRotation = Math.floor(Math.random() * 4) * 90;
             
             pieces.push({
               id,
@@ -229,13 +219,29 @@ function App() {
     });
   };
 
+  // Handle piece drag start
+  const handleDragStart = (e, piece) => {
+    setDraggedPiece(piece);
+  };
 
+  // Handle piece drag
+  const handleDrag = (e, piece) => {
+    const newX = e.target.x();
+    const newY = e.target.y();
+    
+    const updatedPieces = puzzlePieces.map(p => 
+      p.id === piece.id 
+        ? { ...p, x: newX, y: newY }
+        : p
+    );
+    setPuzzlePieces(updatedPieces);
+  };
 
 
 
   // Handle piece click to rotate
   const handlePieceClick = (piece) => {
-    if (piece.isPlaced || !rotationEnabled) return; // Don't rotate placed pieces
+    if (piece.isPlaced) return; // Don't rotate placed pieces
     
     const newRotation = (piece.rotation + 90) % 360;
     const updatedPieces = puzzlePieces.map(p => 
@@ -269,13 +275,16 @@ function App() {
     }
     setPuzzlePieces(newPositions);
     
-    // Calculate board position
+    // Calculate board position (centered) - match the visual frame position exactly
+    // The visual frame uses: top: '50%', left: '50%', transform: translate(-50%, -50%)
+    // So the board center is exactly at PLAY_AREA_WIDTH/2, PLAY_AREA_HEIGHT/2
     const boardCenterX = PLAY_AREA_WIDTH / 2;
     const boardCenterY = PLAY_AREA_HEIGHT / 2;
     const boardX = boardCenterX - boardDimensions.width / 2;
     const boardY = boardCenterY - boardDimensions.height / 2;
     
     // Check if piece is in correct position on the board
+    // KonvaImage x,y now represents center due to offsetX/offsetY
     const pieceCenterX = newPositions[pieceIndex].x + piece.width / 2;
     const pieceCenterY = newPositions[pieceIndex].y + piece.height / 2;
     const correctCenterX = boardX + piece.correctX + piece.width / 2;
@@ -301,7 +310,8 @@ function App() {
     
     if (isCorrectPosition) {
       console.log('Piece snapped to correct position!', piece.id);
-      // Snap to correct position on board
+      // Snap to correct position on the board
+      // Use center-based positioning to match the snapping check
       const snappedPieces = newPositions.map(p => 
         p.id === piece.id 
           ? { 
@@ -321,15 +331,8 @@ function App() {
         setCompleted(true);
       }
     }
-    // If not in correct position, piece stays where it was dropped
+    // If not in correct position, piece stays where it was dropped (no reset)
   };
-
-  // Load default image when component mounts
-  useEffect(() => {
-    if (!previewUrl) {
-      loadDefaultImage();
-    }
-  }, []);
 
   // Initialize puzzle when image is loaded
   useEffect(() => {
@@ -364,7 +367,7 @@ function App() {
     const updatedPieces = puzzlePieces.map(piece => {
       // Only shuffle pieces that are not placed
       if (piece.isPlaced) {
-        return piece; // Keep correctly placed pieces in their current position
+        return piece; // Keep placed pieces in their current position
       }
       
       let randomX, randomY;
@@ -378,9 +381,8 @@ function App() {
         randomY <= boardY + boardDimensions.height + 50
       );
       
-      // Add random rotation based on rotationEnabled state
-      const randomRotation = rotationEnabled ? Math.floor(Math.random() * 4) * 90 : 0;
-      console.log(`Shuffle piece ${piece.id}: rotation set to ${randomRotation} degrees (rotation ${rotationEnabled ? 'ON' : 'OFF'})`);
+      // Add random rotation (0, 90, 180, or 270 degrees)
+      const randomRotation = Math.floor(Math.random() * 4) * 90;
       
       return {
         ...piece,
@@ -393,66 +395,6 @@ function App() {
     setPuzzlePieces(updatedPieces);
     setCompleted(false);
   };
-
-  // Handle rotation toggle
-  const handleRotationToggle = () => {
-    const newRotationState = !rotationEnabled;
-    setRotationEnabled(newRotationState);
-    
-    console.log('Rotation toggled to:', newRotationState ? 'ON' : 'OFF');
-    
-    // If turning rotation ON, shuffle with random rotations
-    // If turning rotation OFF, reset to 0 degrees and shuffle
-    if (puzzlePieces.length > 0) {
-      const playAreaWidth = PLAY_AREA_WIDTH;
-      const playAreaHeight = PLAY_AREA_HEIGHT;
-      
-      const boardCenterX = PLAY_AREA_WIDTH / 2;
-      const boardCenterY = PLAY_AREA_HEIGHT / 2;
-      const boardX = boardCenterX - boardDimensions.width / 2;
-      const boardY = boardCenterY - boardDimensions.height / 2;
-      
-      const updatedPieces = puzzlePieces.map(piece => {
-        // Only affect pieces that are not placed
-        if (piece.isPlaced) {
-          return piece; // Keep placed pieces in their current position
-        }
-        
-        let randomX, randomY;
-        do {
-          randomX = Math.random() * (playAreaWidth - piece.width);
-          randomY = Math.random() * (playAreaHeight - piece.height);
-        } while (
-          randomX >= boardX - 50 && 
-          randomX <= boardX + boardDimensions.width + 50 &&
-          randomY >= boardY - 50 && 
-          randomY <= boardY + boardDimensions.height + 50
-        );
-        
-        // Set rotation based on new state
-        const newRotation = newRotationState ? Math.floor(Math.random() * 4) * 90 : 0;
-        
-        console.log(`Piece ${piece.id}: rotation set to ${newRotation} degrees (rotation ${newRotationState ? 'ON' : 'OFF'})`);
-        
-        return {
-          ...piece,
-          x: randomX,
-          y: randomY,
-          isPlaced: false,
-          rotation: newRotation
-        };
-      });
-      setPuzzlePieces(updatedPieces);
-      setCompleted(false);
-    }
-  };
-
-  // Load default image
-  useEffect(() => {
-    if (!previewUrl) {
-      loadDefaultImage();
-    }
-  }, []);
 
   // When previewUrl changes, load image and generate shapes
   useEffect(() => {
@@ -475,7 +417,7 @@ function App() {
               [shape[0], shape[1]],
               [shape[1], shape[2]],
               [shape[2], shape[0]],
-        ].map(edge => edge.map(([x, y]) => `${x},${y}`));
+            ].map(edge => edge.map(([x, y]) => `${x},${y}`));
           } else {
             // Square, rectangle, or octagon
             const edges = [];
@@ -513,154 +455,6 @@ function App() {
     konvaImgObj.onload = () => setKonvaImg(konvaImgObj);
     konvaImgObj.src = previewUrl;
   }, [previewUrl, difficulty]);
-
-  // Initialize broken glass puzzle when default image is loaded
-  useEffect(() => {
-    if (previewUrl && puzzleShape === 'broken-glass' && usingDefaultImage) {
-      // Trigger the broken glass puzzle initialization
-      const img = new window.Image();
-      img.onload = () => {
-        setImgDimensions({ width: img.width, height: img.height });
-        const numPoints = difficultyPoints[difficulty] || 2;
-        const margin = 0.15 * img.width;
-        const shapes = generateTriangles(img.width, img.height, numPoints, margin);
-        setTriangles(shapes);
-        setGroupIds(shapes.map((_, idx) => idx));
-        setNeighbors(() => {
-          const getEdges = (shape) => {
-            if (shape.length === 3) {
-              return [
-                [shape[0], shape[1]],
-                [shape[1], shape[2]],
-                [shape[2], shape[0]],
-              ].map(edge => edge.map(([x, y]) => `${x},${y}`));
-            } else {
-              const edges = [];
-              for (let i = 0; i < shape.length; i++) {
-                const next = (i + 1) % shape.length;
-                edges.push([shape[i], shape[next]]);
-              }
-              return edges.map(edge => edge.map(([x, y]) => `${x},${y}`));
-            }
-          };
-          const edgeMap = new Map();
-          shapes.forEach((shape, idx) => {
-            getEdges(shape).forEach(edge => {
-              const key = edge.slice().sort().join('|');
-              if (!edgeMap.has(key)) edgeMap.set(key, []);
-              edgeMap.get(key).push(idx);
-            });
-          });
-          return shapes.map((shape, idx) => {
-            const neighborSet = new Set();
-            getEdges(shape).forEach(edge => {
-              const key = edge.slice().sort().join('|');
-              const shapeList = edgeMap.get(key) || [];
-              shapeList.forEach(otherIdx => {
-                if (otherIdx !== idx) neighborSet.add(otherIdx);
-              });
-            });
-            return Array.from(neighborSet);
-          });
-        });
-      };
-      img.src = previewUrl;
-      setKonvaImg(null);
-      const konvaImgObj = new window.Image();
-      konvaImgObj.onload = () => setKonvaImg(konvaImgObj);
-      konvaImgObj.src = previewUrl;
-    }
-  }, [previewUrl, puzzleShape, difficulty, usingDefaultImage]);
-
-  // Handle puzzle shape change - load default image if needed
-  useEffect(() => {
-    if (puzzleShape && !previewUrl) {
-      loadDefaultImage();
-    }
-    // Also load default image when switching to broken-glass if no custom image is loaded
-    if (puzzleShape === 'broken-glass' && !usingDefaultImage && !previewUrl) {
-      loadDefaultImage();
-    }
-    // Also load default image when switching to classic-jigsaw if no custom image is loaded
-    if (puzzleShape === 'classic-jigsaw' && !usingDefaultImage && !previewUrl) {
-      loadDefaultImage();
-    }
-  }, [puzzleShape]);
-
-  // Handle difficulty change - reload puzzle if needed
-  useEffect(() => {
-    if (previewUrl && puzzleShape === 'broken-glass' && usingDefaultImage) {
-      // Reload the broken glass puzzle with new difficulty
-      const img = new window.Image();
-      img.onload = () => {
-        setImgDimensions({ width: img.width, height: img.height });
-        const numPoints = difficultyPoints[difficulty] || 2;
-        const margin = 0.15 * img.width;
-        const shapes = generateTriangles(img.width, img.height, numPoints, margin);
-        setTriangles(shapes);
-        setGroupIds(shapes.map((_, idx) => idx));
-        setNeighbors(() => {
-          const getEdges = (shape) => {
-            if (shape.length === 3) {
-              return [
-                [shape[0], shape[1]],
-                [shape[0], shape[2]],
-                [shape[1], shape[2]],
-              ].map(edge => edge.map(([x, y]) => `${x},${y}`));
-            } else {
-              const edges = [];
-              for (let i = 0; i < shape.length; i++) {
-                const next = (i + 1) % shape.length;
-                edges.push([shape[i], shape[next]]);
-              }
-              return edges.map(edge => edge.map(([x, y]) => `${x},${y}`));
-            }
-          };
-          const edgeMap = new Map();
-          shapes.forEach((shape, idx) => {
-            getEdges(shape).forEach(edge => {
-              const key = edge.slice().sort().join('|');
-              if (!edgeMap.has(key)) edgeMap.set(key, []);
-              edgeMap.get(key).push(idx);
-            });
-          });
-          return shapes.map((shape, idx) => {
-            const neighborSet = new Set();
-            getEdges(shape).forEach(edge => {
-              const key = edge.slice().sort().join('|');
-              const shapeList = edgeMap.get(key) || [];
-              shapeList.forEach(otherIdx => {
-                if (otherIdx !== idx) neighborSet.add(otherIdx);
-              });
-            });
-            return Array.from(neighborSet);
-          });
-        });
-      };
-      img.src = previewUrl;
-      setKonvaImg(null);
-      const konvaImgObj = new window.Image();
-      konvaImgObj.onload = () => setKonvaImg(konvaImgObj);
-      konvaImgObj.src = previewUrl;
-    }
-    
-    // Also handle classic jigsaw difficulty changes
-    if (previewUrl && puzzleShape === 'classic-jigsaw' && puzzlePieces.length > 0) {
-      const size = difficulty === 'Easy' ? 3 : difficulty === 'Medium' ? 4 : 5;
-      setPuzzleSize(size);
-      
-      generatePuzzlePieces(previewUrl, size).then(pieces => {
-        setPuzzlePieces(pieces);
-        if (pieces.length > 0) {
-          setBoardDimensions({
-            width: pieces[0].boardWidth,
-            height: pieces[0].boardHeight
-          });
-        }
-        setCompleted(false);
-      });
-    }
-  }, [difficulty, previewUrl, puzzleShape, usingDefaultImage, puzzlePieces.length]);
 
   // Generate shard images
   useEffect(() => {
@@ -790,7 +584,7 @@ function App() {
 
   // UI
   const showPuzzleUI = !!previewUrl;
-  const showPlayArea = showPuzzleUI && memoryExtracted && (
+  const showPlayArea = showPuzzleUI && (
     puzzleShape === 'classic-jigsaw' || 
     (triangles.length > 0 && piecePositions.length === triangles.length && shardImages.length === triangles.length)
   );
@@ -833,6 +627,7 @@ function App() {
             position: 'relative',
           }}>
             <h2 style={{ fontSize: '2.2rem', margin: 0, marginBottom: '1.5rem', color: '#222' }}>Memory Extracted</h2>
+            {/* Optionally add a description here if you want */}
             {sadImageUrl && (
               <img
                 src={sadImageUrl}
@@ -864,7 +659,7 @@ function App() {
               }}
               disabled={isProcessingEmotion}
             >
-              {isProcessingEmotion ? 'Processing...' : 'Unlock Puzzle Game'}
+              {isProcessingEmotion ? 'Processing...' : 'Press to Begin Reconstruction'}
             </button>
           </div>
         </div>
@@ -880,8 +675,8 @@ function App() {
       </h1>
       <div style={{ fontSize: '1.15rem', color: '#444', marginBottom: '2rem', marginTop: '1rem', textAlign: 'center' }}>
         Welcome to the Resurrecting the Self!
-        <br /> To begin, please select a difficulty level and puzzle shape, then
-        <br /> choose to use the default image or upload your own.
+        <br /> To begin, please select a difficulty level, then upload
+        <br /> a childhood photo of yourself where you are smiling.
       </div>
       <div style={{ fontSize: '1.08rem', color: '#333', marginBottom: '1.5rem', fontWeight: 500, textAlign: 'center' }}>
         Select Difficulty
@@ -941,81 +736,18 @@ function App() {
         ))}
       </div>
       <section style={{ background: '#fff', padding: '2rem 3rem', borderRadius: '1rem', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginTop: '1rem', marginBottom: '2rem' }}>
-        <label style={{ fontSize: '1.2rem', fontWeight: 'bold', display: 'block', marginBottom: '1rem' }}>
-          Choose an image to start:
+        <label htmlFor="image-upload" style={{ fontSize: '1.2rem', fontWeight: 'bold', display: 'block', marginBottom: '1rem' }}>
+          Upload a picture to start:
         </label>
-        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
-          <button
-            onClick={loadDefaultImage}
-            style={{
-              padding: '0.8rem 1.5rem',
-              fontSize: '1rem',
-              borderRadius: '0.5rem',
-              border: usingDefaultImage ? '2.5px solid #0099cc' : '1.5px solid #bbb',
-              background: usingDefaultImage ? '#e6f7ff' : '#fff',
-              color: '#222',
-              fontWeight: usingDefaultImage ? 'bold' : 'normal',
-              cursor: 'pointer',
-              boxShadow: usingDefaultImage ? '0 2px 8px rgba(0,153,204,0.10)' : '0 2px 8px rgba(0,0,0,0.04)',
-              outline: 'none',
-              transition: 'all 0.15s',
-            }}
-          >
-            Default
-          </button>
-          <button
-            onClick={() => document.getElementById('image-upload').click()}
-            style={{
-              padding: '0.8rem 1.5rem',
-              fontSize: '1rem',
-              borderRadius: '0.5rem',
-              border: !usingDefaultImage ? '2.5px solid #0099cc' : '1.5px solid #bbb',
-              background: !usingDefaultImage ? '#e6f7ff' : '#fff',
-              color: '#222',
-              fontWeight: !usingDefaultImage ? 'bold' : 'normal',
-              cursor: 'pointer',
-              boxShadow: !usingDefaultImage ? '0 2px 8px rgba(0,153,204,0.10)' : '0 2px 8px rgba(0,0,0,0.04)',
-              outline: 'none',
-              transition: 'all 0.15s',
-            }}
-          >
-            Upload your picture
-          </button>
-        </div>
         <input
           id="image-upload"
           type="file"
           accept="image/*"
-          style={{ display: 'none' }}
+          style={{ fontSize: '1rem' }}
           onChange={handleImageChange}
         />
         <canvas ref={canvasRef} style={{ display: 'none' }} />
       </section>
-      {/* Loading State - Waiting for Memory Extraction (Only for uploaded images) */}
-      {showPuzzleUI && !usingDefaultImage && !memoryExtracted && !showMemoryModal && (
-        <div style={{
-          marginTop: '1rem',
-          marginBottom: '0.5rem',
-          background: '#fff5f0',
-          borderRadius: '1rem',
-          boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-          padding: '2rem',
-          width: PLAY_AREA_WIDTH,
-          height: PLAY_AREA_HEIGHT,
-          maxWidth: PLAY_AREA_WIDTH,
-          maxHeight: PLAY_AREA_HEIGHT,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          textAlign: 'center',
-        }}>
-          <div style={{ color: '#666', fontSize: '1.2rem' }}>
-            Loading puzzle...
-          </div>
-        </div>
-      )}
-
-      {/* Play Area - Unlocked */}
       {showPlayArea && !showMemoryModal && (
         <div
           style={{
@@ -1070,47 +802,6 @@ function App() {
                   >
                     Shuffle
                   </button>
-
-                  {/* Rotation Toggle button */}
-                  <button
-                    onClick={handleRotationToggle}
-                    style={{
-                      position: 'absolute',
-                      top: 16,
-                      right: 16,
-                      zIndex: 20,
-                      padding: '0.5rem 1.2rem',
-                      fontSize: '1.1rem',
-                      borderRadius: '0.5rem',
-                      border: 'none',
-                      background: rotationEnabled ? '#4CAF50' : '#666',
-                      color: '#fff',
-                      cursor: 'pointer',
-                      fontWeight: 'bold',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.10)',
-                    }}
-                  >
-                    Rotation {rotationEnabled ? 'ON' : 'OFF'}
-                  </button>
-
-                  {/* Rotation instruction text */}
-                  {rotationEnabled && (
-                    <div style={{
-                      position: 'absolute',
-                      top: 60,
-                      right: 16,
-                      zIndex: 20,
-                      background: 'rgba(0,0,0,0.8)',
-                      color: '#fff',
-                      padding: '0.5rem 0.8rem',
-                      borderRadius: '0.4rem',
-                      fontSize: '0.9rem',
-                      maxWidth: '200px',
-                      textAlign: 'center',
-                    }}>
-                      Click individual pieces to rotate them
-                    </div>
-                  )}
                   
 
 
@@ -1240,7 +931,7 @@ function App() {
                           color: '#000000',
                           marginBottom: '1.2rem',
                         }}>
-                          {usingDefaultImage ? 'Puzzle Completed!' : 'Memory Recovered!'}
+                          Memory Recovered!
                         </div>
                         <img
                           src={previewUrl}
@@ -1259,15 +950,9 @@ function App() {
                         <button 
                           onClick={() => {
                             setCompleted(false);
-                            if (puzzleShape === 'classic-jigsaw') {
-                              generatePuzzlePieces(previewUrl, puzzleSize).then(pieces => {
-                                setPuzzlePieces(pieces);
-                              });
-                            } else {
-                              // For broken glass, just reset the pieces
-                              setPiecePositions(scatterPieces());
-                              setGroupIds(triangles.map((_, idx) => idx));
-                            }
+                            generatePuzzlePieces(previewUrl, puzzleSize).then(pieces => {
+                              setPuzzlePieces(pieces);
+                            });
                           }} 
                           style={{ 
                             marginTop: '1.5rem', 
@@ -1282,35 +967,23 @@ function App() {
                             zIndex: 20 
                           }}
                         >
-                          Play Again
+                          Reset
                         </button>
                       </div>
                     </div>
                   )}
                 </>
               ) : (
-                <div style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  height: '100%'
-                }}>
-                  <div style={{
-                    width: '40px',
-                    height: '40px',
-                    border: '4px solid #f3f3f3',
-                    borderTop: '4px solid #ff8c42',
-                    borderRadius: '50%',
-                    animation: 'spin 1s linear infinite'
-                  }} />
+                <div style={{ color: '#666', fontSize: '1.2rem' }}>
+                  Please upload an image first
                 </div>
               )}
             </div>
           ) : (
             // Custom Shapes (Broken Glass, Squares, etc.)
             <>
-          {/* Shuffle button at top left of play area */}
-          <button
+              {/* Shuffle button at top left of play area */}
+              <button
             onClick={() => {
               // Find all unique groupIds
               // const uniqueGroupIds = Array.from(new Set(groupIds));
@@ -1392,7 +1065,7 @@ function App() {
                   color: '#000000',
                   marginBottom: '1.2rem',
                 }}>
-                  {usingDefaultImage ? 'Puzzle Completed!' : 'Memory Recovered!'}
+                  Memory Recovered!
                 </div>
                 <img
                   src={previewUrl}
@@ -1409,7 +1082,7 @@ function App() {
                   }}
                 />
                 <button onClick={handleShuffle} style={{ marginTop: '1.5rem', padding: '0.5rem 1.5rem', fontSize: '1.1rem', borderRadius: '0.5rem', border: 'none', background: '#0099cc', color: '#fff', cursor: 'pointer', fontWeight: 'bold', zIndex: 20 }}>
-                  Play Again
+                  Reset
                 </button>
               </div>
             </div>
@@ -1417,13 +1090,17 @@ function App() {
           <Stage
             width={PLAY_AREA_WIDTH}
             height={PLAY_AREA_HEIGHT}
-            style={{ borderRadius: '1rem', background: '#222', width: '100%', height: PLAY_AREA_HEIGHT, position: 'absolute', left: 0, top: 0 }}
+            style={{ borderRadius: '1rem', background: '#fff5f0', width: '100%', height: PLAY_AREA_HEIGHT, position: 'absolute', left: 0, top: 0 }}
           >
             <Layer ref={layerRef}>
               {groupIds.length > 0 &&
                 Array.from(new Set(groupIds)).map(groupId => {
                   // Find all piece indices in this group
                   const groupPieceIndices = groupIds.map((gid, idx) => gid === groupId ? idx : -1).filter(idx => idx !== -1);
+                  // Use the first piece in the group as the drag handle
+                  const firstIdx = groupPieceIndices[0];
+                  // Calculate group offset (use the first piece's position)
+                  // const groupOffset = piecePositions[firstIdx];
                   return (
                     <Group
                       key={groupId}
@@ -1452,6 +1129,7 @@ function App() {
                         let snapped = false;
                         let snapDelta = { x: 0, y: 0 };
                         let mergeWithGroupId = null;
+                        // let mergeIndices = [];
                         let snappedEdgeInfo = null;
                         for (const idx of groupPieceIndices) {
                           const shape = triangles[idx];
@@ -1478,6 +1156,7 @@ function App() {
                                   let deltaB2 = [nEdgeA[0] - edgeB[0], nEdgeA[1] - edgeB[1]];
                                   let distB = Math.hypot(deltaA2[0], deltaA2[1]) + Math.hypot(deltaB2[0], deltaB2[1]);
                                   let finalDelta;
+                                  let chosenEdgeIdx = edgeIdx;
                                   if (distA < distB) {
                                     finalDelta = deltaA;
                                   } else {
@@ -1529,7 +1208,8 @@ function App() {
                       {groupIds.map((gid, idx) => {
                         if (gid !== groupId) return null;
                         const { img, bbox } = shardImages[idx];
-
+                        const groupX = (bbox.minX * puzzleScale) + piecePositions[idx].x;
+                        const groupY = (bbox.minY * puzzleScale) + piecePositions[idx].y;
                         return (
                           <KonvaImage
                             key={idx}
